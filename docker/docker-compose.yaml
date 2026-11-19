@@ -1,0 +1,19 @@
+###Up
+#clear;docker-compose up -d --remove-orphans;docker-compose logs -f
+
+services:
+  simplerxy:
+    image: tquang/go2dhcp:0.0.1
+    environment:
+      TZ: "Asia/Saigon"
+    ports:
+      - "8888:8888"
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./config.conf:/app/go2dhcp/config.conf
