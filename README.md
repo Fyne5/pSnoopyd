@@ -8,6 +8,8 @@ Nhìn hình rồi đoán tính năng thôi, chứ đã nghèo mà còn nói nhi�
 
 Just look at the image and guess the feature, no point in talking so much or trying to explain when you’re already broke.
 
+<img width="1626" height="1147" alt="Screenshot 2026-11-19 100740" src="https://github.com/user-attachments/assets/6e84104c-7bf0-4970-af1e-504635511a1d" />
+
 ## Cách biên dịch ra nhị phân / How to build to binary
 ```
 git clone https://github.com/Fyne5/Go2DHCP.git
