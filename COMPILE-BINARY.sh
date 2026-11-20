@@ -8,13 +8,13 @@ if [ "$1" == "run" ]; then
     exit 0
 fi
 
-rm -f Go2DHCP-*
+rm -f pSnoopyd-*
 
 BUILD_FLAGS=(-trimpath "-ldflags=-s -w")
 # Khi build kết hợp 2 tham số này, thì sẽ chỉ còn thấy "-trimpath=true", đó là bình thường.
 # Còn "-ldflags=-s -w" sẽ không hiện trực tiếp, khi so dung lượng binary xuất ra mới thấy nhỏ hơn.
-# go version -m Go2DHCP-linux-amd64
-# Go2DHCP-linux-amd64: go1.24.4
+# go version -m pSnoopyd-linux-amd64
+# pSnoopyd-linux-amd64: go1.24.4
 #         path    command-line-arguments
 #         build   -buildmode=exe
 #         build   -compiler=gc
@@ -25,9 +25,9 @@ BUILD_FLAGS=(-trimpath "-ldflags=-s -w")
 #         build   GOAMD64=v1
 
 PLATFORMS=(
-  "linux/amd64/Go2DHCP-linux-amd64"
-  "linux/arm64/Go2DHCP-linux-arm64"
-  "linux/386/Go2DHCP-linux-386"
+  "linux/amd64/pSnoopyd-linux-amd64"
+  "linux/arm64/pSnoopyd-linux-arm64"
+  "linux/386/pSnoopyd-linux-386"
 )
 
 echo "Compiling..."
@@ -42,6 +42,6 @@ done
 
 wait
 
-chmod +x Go2DHCP-* 2>/dev/null
+chmod +x pSnoopyd-* 2>/dev/null
 
 echo "Done!"

@@ -560,7 +560,7 @@ func interfaceNames() []string {
 }
 
 func main() {
-	log.Printf("Go2DHCP %s", version)
+	log.Printf("pSnoopyd %s", version)
 	cfgPath := flag.String("c", "config.conf", "path of config file")
 	flag.Parse()
 

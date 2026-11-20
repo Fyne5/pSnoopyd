@@ -2,8 +2,8 @@
 #clear;docker-compose up -d --remove-orphans;docker-compose logs -f
 
 services:
-  simplerxy:
-    image: tquang/go2dhcp:0.0.1
+  psnoopyd:
+    image: tquang/psnoopyd:0.0.1
     environment:
       TZ: "Asia/Saigon"
     ports:
@@ -16,4 +16,4 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
-      - ./config.conf:/app/go2dhcp/config.conf
+      - ./config.conf:/app/psnoopyd/config.conf
