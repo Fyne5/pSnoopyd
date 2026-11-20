@@ -26,6 +26,7 @@ var version = "0.0.1"
 
 const (
 	ethPIP              = 0x0800
+	ethPAll             = 0x0003
 	solPacket           = 0x107
 	packetAddMembership = 1
 	packetMrPromisc     = 1
@@ -67,17 +68,14 @@ type AlertEvent struct {
 }
 
 var (
-	cfg Config // chỉ ghi một lần lúc khởi động, sau đó chỉ đọc => không cần khoá
-
-	mu         sync.Mutex // bảo vệ alerts, alertIndex, logFile
+	cfg Config
+	mu         sync.Mutex
 	alerts     []*AlertEvent
 	alertIndex = map[string]*AlertEvent{}
 	logFile    *os.File
-
 	pktTotal, pktDropped atomic.Uint64
 )
 
-// Khai báo Pool quản lý buffer tối đa 4096 byte
 var packetPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, 4096)
@@ -96,10 +94,10 @@ type PacketTask struct {
 
 func loadConfig(path string) (Config, error) {
 	c := Config{
-		LogShow:     true,
-		LogFilePath: "dhcp_security.log",
-		WebGUI:      "127.0.0.1:8888",
-		Promisc:     true,
+		LogShow:       true,
+		LogFilePath:   "dhcp_security.log",
+		WebGUI:        "127.0.0.1:8888",
+		Promisc:       true,
 	}
 
 	data, err := os.ReadFile(path)
@@ -174,6 +172,7 @@ func isTrue(s string) bool {
 	return false
 }
 
+// Server hợp lệ khi KHỚP CẢ IP VÀ MAC (AND), không phải một trong hai.
 func isAuthorized(ip, mac string) bool {
 	for _, s := range cfg.AllowedServers {
 		if s.IP == ip && s.MAC == mac {
@@ -196,21 +195,26 @@ var dhcpReplyFilter = []syscall.SockFilter{
 	{Code: 0x30, K: 23},                   // 2: ldb [23]          ; IP protocol
 	{Code: 0x15, Jt: 0, Jf: 6, K: 17},     // 3: jeq 17 (UDP) ? tiếp : loại
 	{Code: 0x28, K: 20},                   // 4: ldh [20]          ; flags + fragment offset
-	{Code: 0x45, Jt: 4, Jf: 0, K: 0x1fff}, // 5: jset 0x1fff ? loại : tiếp
+	{Code: 0x45, Jt: 4, Jf: 0, K: 0x1fff}, // 5: jset 0x1fff ? loại : tiếp (bỏ mảnh IP)
 	{Code: 0xb1, K: 14},                   // 6: ldxb 4*([14]&0xf) ; X = độ dài header IP
 	{Code: 0x48, K: 14},                   // 7: ldh [x+14]        ; UDP source port
 	{Code: 0x15, Jt: 0, Jf: 1, K: 67},     // 8: jeq 67 ? nhận : loại
-	{Code: 0x06, K: 0x40000},              // 9: nhận
-	{Code: 0x06, K: 0},                    // 10: loại
+	{Code: 0x06, K: 0x40000},              // 9: return 262144 (nhận)
+	{Code: 0x06, K: 0},                    // 10: return 0 (loại)
 }
 
-func openRawSocket(ifName string, promisc bool) (int, error) {
+func openRawSocket(ifName string, promisc, all bool) (int, error) {
 	ifi, err := net.InterfaceByName(ifName)
 	if err != nil {
 		return -1, fmt.Errorf("could not found interface %q: %w", ifName, err)
 	}
 
-	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC, int(htons(ethPIP)))
+	proto := uint16(ethPIP)
+	if all {
+		proto = ethPAll
+	}
+
+	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC, int(htons(proto)))
 	if err != nil {
 		return -1, fmt.Errorf("create AF_PACKET socket (need root/CAP_NET_RAW): %w", err)
 	}
@@ -220,7 +224,7 @@ func openRawSocket(ifName string, promisc bool) (int, error) {
 	}
 
 	// Gắn socket vào đúng một interface, chỉ nhận EtherType IPv4
-	if err := syscall.Bind(fd, &syscall.SockaddrLinklayer{Protocol: htons(ethPIP), Ifindex: ifi.Index}); err != nil {
+	if err := syscall.Bind(fd, &syscall.SockaddrLinklayer{Protocol: htons(proto), Ifindex: ifi.Index}); err != nil {
 		return fail("bind interface", err)
 	}
 
@@ -249,6 +253,30 @@ func setPromisc(fd, ifindex int) error {
 	binary.LittleEndian.PutUint32(mreq[0:4], uint32(ifindex))
 	binary.LittleEndian.PutUint16(mreq[4:6], packetMrPromisc)
 	return syscall.SetsockoptString(fd, solPacket, packetAddMembership, string(mreq))
+}
+
+// Nhận diện máy chạy kiểm tra DHCP có nằm cùng với DHCP server không?
+func localWhitelistedServer(ifName string) (AuthorizedServer, string, bool) {
+	ifi, err := net.InterfaceByName(ifName)
+	if err != nil {
+		return AuthorizedServer{}, "", false
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return AuthorizedServer{}, "", false
+	}
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		for _, s := range cfg.AllowedServers {
+			if s.IP == ipn.IP.String() {
+				return s, strings.ToUpper(ifi.HardwareAddr.String()), true
+			}
+		}
+	}
+	return AuthorizedServer{}, "", false
 }
 
 // Luồng 1: đọc frame từ kernel bằng sync.Pool, đẩy sang channel
@@ -390,7 +418,7 @@ func worker(in <-chan PacketTask, wg *sync.WaitGroup) {
 	for task := range in {
 		handleFrame(task.Bytes)
 
-		// Xử lý xong, lấy lại capacity gốc (65536) rồi trả về pool
+		// Xử lý xong, lấy lại capacity gốc rồi trả về pool
 		fullBuf := task.Bytes[:cap(task.Bytes)]
 		packetPool.Put(fullBuf)
 	}
@@ -487,8 +515,7 @@ var dashTmpl = template.Must(template.New("dash").Parse(`<!DOCTYPE html>
  th { background: #252526; color: #569cd6; }
  tr:nth-child(even) { background: #2d2d2d; }
  .alert { color: #f44747; font-weight: bold; }
- .status { padding: 10px; background: #264f78; margin-bottom: 20px; border-radius: 4px; }
- ul { background: #252526; padding: 15px 30px; border-radius: 4px; }
+ .status { padding: 10px; background: #264f78; margin-bottom: 20px; }
 </style>
 </head>
 <body>
@@ -496,7 +523,7 @@ var dashTmpl = template.Must(template.New("dash").Parse(`<!DOCTYPE html>
 <div class="status">
  <strong>Status:</strong> observing <code>{{.Cfg.Interface}}</code> |
  Legal servers: {{len .Cfg.AllowedServers}} |
- DHCP packages: {{.Packets}} | Skip packages (overload): {{.Dropped}}
+ DHCP replies seen: {{.Packets}} | Dropped (overload): {{.Dropped}}
 </div>
 
 <h2>Whitelist</h2>
@@ -510,7 +537,7 @@ var dashTmpl = template.Must(template.New("dash").Parse(`<!DOCTYPE html>
 
 <h2>Alert Rogue DHCP Server</h2>
 <table>
-<tr><th>First time</th><th>Last time</th><th>IP</th><th>MAC</th><th>Numbers</th><th>Description</th></tr>
+<tr><th>First time</th><th>Last time</th><th>IP</th><th>MAC</th><th>Count</th><th>Description</th></tr>
 {{range .Alerts}}<tr>
  <td>{{.FirstSeen}}</td><td>{{.LastSeen}}</td>
  <td class="alert">{{.ServerIP}}</td><td>{{.ServerMAC}}</td>
@@ -528,9 +555,8 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Chỉ giữ khoá lúc sao chép dữ liệu; render và ghi mạng làm ngoài khoá
-	mu.Lock()
 	view := dashView{Cfg: cfg, Packets: pktTotal.Load(), Dropped: pktDropped.Load()}
+	mu.Lock()
 	for _, a := range alerts {
 		view.Alerts = append(view.Alerts, *a)
 	}
@@ -579,10 +605,23 @@ func main() {
 	}
 	log.Printf("[CONFIG]: legal server(s) %d, interface=%s", len(cfg.AllowedServers), cfg.Interface)
 
-	// 2. Mở raw socket (lỗi quyền sẽ báo ở đây)
-	fd, err := openRawSocket(cfg.Interface, cfg.Promisc)
+	// 2. Tự nhận biết DHCP server chạy cùng máy: nếu một IP trong whitelist chính là địa chỉ
+	//    của card đang nghe thì reply của nó là gói GỬI RA, nên phải bắt cả hai chiều.
+	captureAll := false
+	if s, ifMAC, ok := localWhitelistedServer(cfg.Interface); ok {
+		captureAll = true
+		log.Printf("[AUTO]: DHCP server %s is running on this host (%s): capturing incoming + outgoing packets",
+			s.IP, cfg.Interface)
+		if s.MAC != ifMAC {
+			log.Printf("[WARNING] Whitelist MAC %s for %s differs from the MAC of %s (%s): "+
+				"its own replies will be reported as Rogue. Fix AllowDHCP.", s.MAC, s.IP, cfg.Interface, ifMAC)
+		}
+	}
+
+	// 2b. Mở raw socket (lỗi quyền sẽ báo ở đây)
+	fd, err := openRawSocket(cfg.Interface, cfg.Promisc, captureAll)
 	if err != nil {
-		log.Fatalf("[ERR] %v", err)
+		log.Fatalf("[LỖI] %v", err)
 	}
 	defer syscall.Close(fd)
 
