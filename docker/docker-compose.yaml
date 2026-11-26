@@ -3,7 +3,10 @@
 
 services:
   psnoopyd:
+    container_name: psnoopyd
     image: tquang/psnoopyd:0.0.1
+    pull_policy: always
+    network_mode: host
     environment:
       TZ: "Asia/Saigon"
     ports:
